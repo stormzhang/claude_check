@@ -245,7 +245,7 @@ def tbl_row(label, value):
     value = str(value)
     lpad = ' ' * max(0, L1 - dlen(label))
     vpad = ' ' * max(0, L2 - dlen(value))
-    lstr = f"{C.GRAY}{label}{C.RESET}{lpad}" if label else ' ' * L1
+    lstr = f"{label}{lpad}" if label else ' ' * L1
     print(f"  \u2551 {lstr} \u2502 {value}{vpad} \u2551")
 
 

@@ -300,10 +300,14 @@ def get_dns_servers():
     else:
         # Linux：/etc/resolv.conf
         try:
+            seen = set()
             with open('/etc/resolv.conf') as f:
                 for line in f:
                     if line.strip().startswith('nameserver'):
-                        servers.append(line.split()[1])
+                        ip = line.split()[1]
+                        if ip not in seen:
+                            seen.add(ip)
+                            servers.append(ip)
         except Exception:
             pass
         # macOS：scutil --dns

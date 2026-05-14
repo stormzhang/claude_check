@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-IP & 环境检测工具
+ipcheck — 网络环境诊断工具
 检测本机 IP、IPv6、DNS、公网信息、代理状态、时区
 支持 macOS / Linux / Windows
 """
@@ -14,6 +14,13 @@ import datetime
 import re
 import platform
 
+import requests
+
+try:
+    from zoneinfo import ZoneInfo as _ZI
+except ImportError:
+    _ZI = None
+
 # ── 编码修正（Windows cmd 默认非 UTF-8）────────────────────
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
     try:
@@ -22,100 +29,6 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
         pass
 
 IS_WIN = platform.system() == 'Windows'
-
-
-# ── 依赖自动安装 ──────────────────────────────────────────
-def _pip_install(packages):
-    """安装包；pip 不可用时先尝试 ensurepip 引导，仍失败则打印平台对应指引。"""
-    # 第一次尝试：直接 pip install
-    try:
-        subprocess.check_call(
-            [sys.executable, '-m', 'pip', 'install', '--quiet'] + packages
-        )
-        return True
-    except subprocess.CalledProcessError:
-        pass
-
-    # pip 本身可能未安装，用 ensurepip 引导（Python 3.4+ 内置）
-    print("pip 不可用，正在尝试自动引导安装 pip...")
-    try:
-        subprocess.check_call([sys.executable, '-m', 'ensurepip', '--upgrade'])
-        subprocess.check_call(
-            [sys.executable, '-m', 'pip', 'install', '--quiet'] + packages
-        )
-        return True
-    except subprocess.CalledProcessError:
-        pass
-
-    # 彻底失败：给出平台对应的手动安装指引
-    system = platform.system()
-    print("\n无法自动安装 pip，请手动安装后重试：\n")
-    if system == 'Windows':
-        print("  1. 下载 https://bootstrap.pypa.io/get-pip.py")
-        print("  2. 在命令提示符中运行: python get-pip.py")
-    elif system == 'Darwin':
-        print("  方法一: python3 -m ensurepip --upgrade")
-        print("  方法二（Homebrew）: brew install python3")
-    else:
-        print("  Ubuntu / Debian : sudo apt  install python3-pip")
-        print("  CentOS / RHEL   : sudo yum  install python3-pip")
-        print("  Fedora          : sudo dnf  install python3-pip")
-        print("  Arch            : sudo pacman -S python-pip")
-    print(f"\n安装 pip 后运行: pip install {' '.join(packages)}")
-    return False
-
-
-def _ensure_deps():
-    needed = []
-
-    # requests：必须
-    try:
-        import requests  # noqa: F401
-    except ImportError:
-        needed.append('requests')
-
-    # colorama：Windows 彩色输出
-    if IS_WIN:
-        try:
-            import colorama  # noqa: F401
-        except ImportError:
-            needed.append('colorama')
-
-    # tzdata：Windows 下 zoneinfo 需要它才能识别 IANA 时区
-    if IS_WIN:
-        try:
-            import tzdata  # noqa: F401
-        except ImportError:
-            needed.append('tzdata')
-
-    # backports.zoneinfo：Python < 3.9 的回退
-    if sys.version_info < (3, 9):
-        try:
-            from backports import zoneinfo  # noqa: F401
-        except ImportError:
-            needed.append('backports.zoneinfo')
-
-    if not needed:
-        return
-
-    print(f"缺少依赖包: {', '.join(needed)}")
-    try:
-        ans = input("是否自动安装？[Y/n] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        ans = 'n'
-
-    if ans not in ('', 'y', 'yes'):
-        print(f"请手动安装后重试: pip install {' '.join(needed)}")
-        sys.exit(1)
-
-    # 尝试安装
-    if not _pip_install(needed):
-        sys.exit(1)
-    print()
-
-_ensure_deps()
-
-import requests  # noqa: E402
 
 
 # ── 已知 DNS ──────────────────────────────────────────────
@@ -149,6 +62,7 @@ KNOWN_DNS = {
     '76.76.10.0':      'Alternate DNS (US)',
 }
 
+
 def dns_label(ip):
     if ip in KNOWN_DNS:
         return f"{ip}  {KNOWN_DNS[ip]}"
@@ -160,19 +74,7 @@ def dns_label(ip):
     return ip
 
 
-
-
-# ── zoneinfo（Windows 需额外安装 tzdata）─────────────────
-try:
-    from zoneinfo import ZoneInfo as _ZI
-except ImportError:
-    try:
-        from backports.zoneinfo import ZoneInfo as _ZI  # type: ignore
-    except ImportError:
-        _ZI = None
-
 def make_zone(name):
-    """构造 ZoneInfo；失败（含 Windows 缺少 tzdata）返回 None。"""
     if not _ZI or not name:
         return None
     try:
@@ -181,17 +83,19 @@ def make_zone(name):
         return None
 
 
+def _val(v, fallback="未知"):
+    return v if v else warn(fallback)
+
+
 # ── 颜色 ─────────────────────────────────────────────────
 def _init_color():
     if IS_WIN:
-        # 优先 colorama
         try:
             import colorama
             colorama.init()
             return True
         except ImportError:
             pass
-        # 次选：直接开启 Win10+ 虚拟终端处理
         try:
             import ctypes
             h = ctypes.windll.kernel32.GetStdHandle(-11)
@@ -205,6 +109,7 @@ def _init_color():
 
 _COLOR = _init_color()
 
+
 class C:
     RESET  = "\033[0m"  if _COLOR else ""
     BOLD   = "\033[1m"  if _COLOR else ""
@@ -216,7 +121,8 @@ class C:
 
 ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 
-def _cw(c):
+
+def char_width(c):
     cp = ord(c)
     if (0x2E80 <= cp <= 0x303E or 0x3040 <= cp <= 0x33FF or
         0x3400 <= cp <= 0x4DBF or 0x4E00 <= cp <= 0x9FFF or
@@ -226,8 +132,10 @@ def _cw(c):
         return 2
     return 1
 
-def dlen(s):
-    return sum(_cw(c) for c in ANSI_RE.sub('', s))
+
+def display_len(s):
+    return sum(char_width(c) for c in ANSI_RE.sub('', s))
+
 
 def ok(v):   return f"{C.GREEN}{v}{C.RESET}"
 def warn(v): return f"{C.YELLOW}{v}{C.RESET}"
@@ -235,18 +143,19 @@ def bad(v):  return f"{C.RED}{v}{C.RESET}"
 
 
 # ── 表格渲染 ──────────────────────────────────────────────
-L1, L2 = 18, 46
+COL_LABEL, COL_VALUE = 18, 46
 
-def tbl_top(): print(f"  \u2554{'═'*(L1+2)}\u2564{'═'*(L2+2)}\u2557")
-def tbl_sep(): print(f"  \u2560{'═'*(L1+2)}\u256a{'═'*(L2+2)}\u2563")
-def tbl_bot(): print(f"  \u255a{'═'*(L1+2)}\u2567{'═'*(L2+2)}\u255d")
+def tbl_top(): print(f"  ╔{'═'*(COL_LABEL+2)}╤{'═'*(COL_VALUE+2)}╗")
+def tbl_sep(): print(f"  ╠{'═'*(COL_LABEL+2)}╪{'═'*(COL_VALUE+2)}╣")
+def tbl_bot(): print(f"  ╚{'═'*(COL_LABEL+2)}╧{'═'*(COL_VALUE+2)}╝")
+
 
 def tbl_row(label, value):
     value = str(value)
-    lpad = ' ' * max(0, L1 - dlen(label))
-    vpad = ' ' * max(0, L2 - dlen(value))
-    lstr = f"{label}{lpad}" if label else ' ' * L1
-    print(f"  \u2551 {lstr} \u2502 {value}{vpad} \u2551")
+    lpad = ' ' * max(0, COL_LABEL - display_len(label))
+    vpad = ' ' * max(0, COL_VALUE - display_len(value))
+    lstr = f"{label}{lpad}" if label else ' ' * COL_LABEL
+    print(f"  ║ {lstr} │ {value}{vpad} ║")
 
 
 # ── 数据采集 ─────────────────────────────────────────────
@@ -260,6 +169,7 @@ def get_lan_ip():
     except Exception:
         return warn("获取失败")
 
+
 def get_ipv6():
     try:
         s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
@@ -272,10 +182,10 @@ def get_ipv6():
         pass
     return warn("已禁用")
 
+
 def get_dns_servers():
     servers = []
     if IS_WIN:
-        # PowerShell：读取所有网卡的 IPv4 DNS（去重）
         try:
             r = subprocess.run(
                 ['powershell', '-NoProfile', '-Command',
@@ -298,7 +208,6 @@ def get_dns_servers():
         except Exception:
             pass
     else:
-        # Linux：/etc/resolv.conf
         try:
             seen = set()
             with open('/etc/resolv.conf') as f:
@@ -310,7 +219,6 @@ def get_dns_servers():
                             servers.append(ip)
         except Exception:
             pass
-        # macOS：scutil --dns
         if not servers:
             try:
                 r = subprocess.run(
@@ -328,6 +236,7 @@ def get_dns_servers():
                 pass
     return servers
 
+
 def get_public_info():
     try:
         resp = requests.get(
@@ -338,6 +247,7 @@ def get_public_info():
         return resp.json()
     except Exception as e:
         return {"status": "fail", "message": str(e)}
+
 
 def get_ip_risk(ip):
     try:
@@ -368,6 +278,7 @@ def get_ip_risk(ip):
     except Exception as e:
         return warn(f"查询失败（{e}）")
 
+
 def get_stopforumspam(ip):
     try:
         resp = requests.get(
@@ -394,6 +305,7 @@ def get_stopforumspam(ip):
     except Exception as e:
         return [warn(f"查询失败（{e}）")]
 
+
 def get_proxy_envs():
     seen = {}
     for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
@@ -403,20 +315,15 @@ def get_proxy_envs():
             seen[key.upper()] = val
     return seen
 
+
 def _utc_str(offset):
-    """timedelta → 'UTC±HH:MM' 字符串"""
     total = int(offset.total_seconds())
     h, r  = divmod(abs(total), 3600)
     sign  = "+" if total >= 0 else "-"
     return f"UTC{sign}{h:02d}:{r//60:02d}"
 
+
 def get_cli_tz_name():
-    """
-    返回 (tz_name, is_iana) 元组。
-    - 优先取 $TZ 环境变量（跨平台，IANA 格式）
-    - Windows 下退而取 PowerShell 本地时区 ID（非 IANA，用于展示）
-    - 最后用 Python tzname() 兜底
-    """
     tz_env = os.environ.get('TZ', '')
     if tz_env:
         return tz_env, True
@@ -430,7 +337,7 @@ def get_cli_tz_name():
             )
             win_id = r.stdout.strip()
             if win_id:
-                return win_id, False   # Windows ID，非 IANA
+                return win_id, False
         except Exception:
             pass
 
@@ -442,7 +349,7 @@ def get_cli_tz_name():
 def main():
     pub = get_public_info()
 
-    print(f"\n  {C.BOLD}IP & 环境检测工具{C.RESET}  "
+    print(f"\n  {C.BOLD}ipcheck — 网络环境诊断工具{C.RESET}  "
           f"{C.GRAY}({platform.system()} / Python {platform.python_version()}){C.RESET}\n")
     tbl_top()
 
@@ -461,12 +368,13 @@ def main():
 
     # 公网信息
     if pub.get("status") == "success":
-        tbl_row("公网 IP",          pub.get("query", "-"))
-        tbl_row("国家 / 省份",      f"{pub.get('country', '-')} / {pub.get('regionName', '-')}")
-        tbl_row("城市",              pub.get("city", "-"))
-        tbl_row("ISP(互联网服务商)", pub.get("isp", "-"))
-        tbl_row("组织",              pub.get("org", "-"))
-        pub_tz_name = pub.get("timezone", "")
+        pub_ip = pub.get("query")
+        tbl_row("公网 IP",          pub_ip or bad("获取失败"))
+        tbl_row("国家 / 省份",      f"{_val(pub.get('country'))} / {_val(pub.get('regionName'))}")
+        tbl_row("城市",              _val(pub.get("city")))
+        tbl_row("ISP(互联网服务商)", _val(pub.get("isp")))
+        tbl_row("组织",              _val(pub.get("org")))
+        pub_tz_name = pub.get("timezone")
         if pub_tz_name:
             zi = make_zone(pub_tz_name)
             if zi:
@@ -475,9 +383,9 @@ def main():
             else:
                 tbl_row("所处时区", pub_tz_name)
         else:
-            tbl_row("所处时区", "-")
+            tbl_row("所处时区", _val(None))
     else:
-        tbl_row("公网请求", bad(pub.get("message", "未知错误")))
+        tbl_row("公网请求", bad(pub.get("message") or "未知错误"))
 
     tbl_sep()
 
@@ -491,8 +399,7 @@ def main():
     if pub.get("status") == "success":
         tbl_row("IP 标记为代理", bad("是 ✗") if pub.get("proxy")   else ok("否 ✓"))
         tbl_row("机房 / 托管",   bad("是 ✗") if pub.get("hosting") else ok("否 ✓"))
-        if pub.get("hosting") or pub.get("proxy"):
-            pub_ip = pub.get("query", "")
+        if (pub.get("hosting") or pub.get("proxy")) and pub_ip:
             tbl_row("IP 风险查询",  get_ip_risk(pub_ip))
             spam_lines = get_stopforumspam(pub_ip)
             tbl_row("垃圾滥用记录", spam_lines[0])
@@ -507,16 +414,14 @@ def main():
     tz_name, is_iana = get_cli_tz_name()
     tbl_row("CLI 时区", f"{tz_name}  ({_utc_str(cli_offset)})")
 
-    pub_tz_name = pub.get("timezone", "") if pub.get("status") == "success" else ""
+    pub_tz_name = pub.get("timezone") if pub.get("status") == "success" else None
     if pub_tz_name:
         pub_zi     = make_zone(pub_tz_name)
         pub_offset = datetime.datetime.now(pub_zi).utcoffset() if pub_zi else None
 
         if is_iana:
-            # $TZ 是 IANA 格式，直接比较名称（最准确）
             match = ok("一致 ✓") if tz_name == pub_tz_name else bad("不一致 ✗")
         elif pub_offset is not None:
-            # Windows 无 IANA $TZ，退而比较 UTC 偏移
             if cli_offset == pub_offset:
                 match = warn("UTC 偏移一致（建议设置 $TZ=IANA 名称精确比对）")
             else:
@@ -527,13 +432,8 @@ def main():
 
     tbl_bot()
 
-    # Windows 提示
     if IS_WIN and _ZI is None:
         print(f"\n  {C.YELLOW}提示：pip install tzdata  （Windows 时区精确比对所需）{C.RESET}")
     if IS_WIN and not _COLOR:
         print(f"\n  提示：pip install colorama  （启用彩色输出）")
     print()
-
-
-if __name__ == "__main__":
-    main()

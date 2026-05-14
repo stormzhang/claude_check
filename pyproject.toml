@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ip-check-mcp"
-version = "0.1.0"
-description = "A lightweight diagnostic MCP server for AI developers to verify network environment compatibility and IP reputation for LLM API access."
+name = "ipcheck"
+version = "1.0.0"
+description = "A lightweight diagnostic tool for AI developers to verify network environment compatibility and IP reputation."
 readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "stormzhang", email = "stormzhang.dev@gmail.com"}]
 requires-python = ">=3.10"
-keywords = ["mcp", "ip-check", "network", "ai", "claude", "openai", "diagnostic"]
+keywords = ["ip-check", "network", "ai", "claude", "openai", "diagnostic"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -23,12 +23,13 @@ classifiers = [
     "Topic :: System :: Networking",
 ]
 dependencies = [
-    "mcp[cli]>=1.0.0",
     "requests>=2.28.0",
+    "colorama; sys_platform == 'win32'",
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.scripts]
-ip-check-mcp = "ip_check_mcp.server:main"
+ipcheck = "ipcheck.cli:main"
 
 [project.urls]
 Repository = "https://github.com/stormzhang/ip_check"
